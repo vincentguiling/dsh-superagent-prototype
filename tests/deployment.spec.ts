@@ -25,6 +25,8 @@ const setupError = (place: string, code: string, values: Record<string, unknown>
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'deployment-'))
   mkdirSync(join(dir, 'bin')); mkdirSync(join(dir, 'state', 'worker-bin'), { recursive: true }); mkdirSync(join(dir, 'widgets', 'src'), { recursive: true })
+  // The shell-script CLI fixtures below exercise POSIX execution; Windows has native .exe coverage in windows-platform.spec.ts.
+  if (process.platform === 'win32') return
   path = [join(dir, 'state-link', 'worker-bin'), `${join(dir, 'state', 'worker-bin')}/`, join(dir, 'bin'), '/usr/bin', '/bin'].join(':')
   gh(join(dir, 'bin', 'gh'), 'Agent-Bot')
   program(join(dir, 'bin', 'lark-cli'), lark({ appId: 'cli_bot', brand: 'lark', identities: { bot: { status: 'ready' } } }))
@@ -56,7 +58,7 @@ describe('configuration schema', () => {
   })
 })
 
-describe('setup', () => {
+describe.skipIf(process.platform === 'win32')('POSIX setup', () => {
   it('reads the repository from the GitHub Source and the accounts from their CLIs, skipping the worker shims', async () => {
     const deployment = await resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh' }, probe, path)
     expect(deployment).toMatchObject({ repository: 'acme/widgets', github: { cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' } })

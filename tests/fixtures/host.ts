@@ -134,7 +134,8 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
 /** @param seed - writes to the database before the Runtime opens it, such as records an earlier version stored. */
 export async function startRuntime(seed?: (store: Store) => void) {
   const directory = mkdtempSync(join(tmpdir(), 'orchestrator-host-'))
-  const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
+  const extension = process.platform === 'win32' ? '.exe' : ''
+  const AGENT = join(directory, 'agent-gh' + extension), BOT = join(directory, 'lark-bot' + extension)
   const repository = { default_branch: 'master', permissions: { push: true } }
   vi.spyOn(Commands.prototype, 'gh').mockImplementation(async args => args[1] === 'user' ? { login: 'agent-bot' } : repository)
   vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ users: [{ member_id: MEMBER, name: 'Alice' }], has_more: false })

@@ -69,7 +69,8 @@ const words = (count: number) => Array.from({ length: count }, () => 'word').joi
 /** Start a configured Runtime on a fake DSH host (as in tests/runtime.spec.ts) that records registered tools, prompts, skills, and delivered messages per session. */
 async function start() {
   const directory = mkdtempSync(join(tmpdir(), 'model-surface-'))
-  const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
+  const extension = process.platform === 'win32' ? '.exe' : ''
+  const AGENT = join(directory, 'agent-gh' + extension), BOT = join(directory, 'lark-bot' + extension)
   for (const cli of [AGENT, BOT]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
   const repository = { default_branch: 'master', permissions: { push: true } }
   vi.spyOn(Commands.prototype, 'gh').mockImplementation(async args => args[1] === 'user' ? { login: 'agent-bot' } : repository)

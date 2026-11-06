@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
@@ -22,7 +22,8 @@ const workerEnv = (env: Record<string, string | undefined>): Record<string, stri
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'environment-')); mkdirSync(join(dir, 'real')) })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
-describe('worker shims', () => {
+// Windows .cmd shims have native integration coverage in windows-environment.spec.ts.
+describe.skipIf(process.platform === 'win32')('worker shims', () => {
   it('run a wrapper that calls `gh` by name without reaching the shim again, and keep the caller\'s other PATH entries', async () => {
     program(join(dir, 'real', 'gh'), 'echo "{\\"login\\":\\"agent-bot\\",\\"config\\":\\"$GH_CONFIG_DIR\\",\\"path\\":\\"$PATH\\"}"')
     const wrapper = program(join(dir, 'gh-agent'), `GH_CONFIG_DIR=${dir}/agent-config exec gh "$@"`)
@@ -84,7 +85,7 @@ describe('agent git configuration', () => {
     await git('init', '-q', 'repo')
     await exec('git', ['-C', 'repo', 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git'], { cwd: dir, env })
     expect(await git('-C', 'repo', 'remote', 'get-url', '--push', 'origin')).toBe('https://github.com/acme/widgets.git')
-    expect(await git('config', '--show-origin', '--get-all', 'credential.https://github.com.helper')).toBe(`file:${workerGitConfig(dir)}\t${credentialHelper('/opt/agent tools/gh')}`)
+    expect(await git('config', '-z', '--show-origin', '--get-all', 'credential.https://github.com.helper')).toBe(`file:${workerGitConfig(dir)}\0${credentialHelper('/opt/agent tools/gh')}\0`)
     expect(await git('config', '--get-all', 'credential.helper')).toBe('')
     await expect(git('config', 'commit.gpgsign')).rejects.toThrow()
     await expect(git('config', 'core.abbrev')).rejects.toThrow()
@@ -113,9 +114,9 @@ it('fails instead of asking the operator\'s askpass helpers when the agent\'s cr
 
 it('removes every spelling of a directory from PATH and keeps the other entries', () => {
   mkdirSync(join(dir, 'state', 'worker-bin'), { recursive: true })
-  symlinkSync(join(dir, 'state'), join(dir, 'link'))
+  symlinkSync(join(dir, 'state'), join(dir, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
   const bin = join(dir, 'state', 'worker-bin')
-  expect(withoutDirectory([`${bin}/`, join(dir, 'link', 'worker-bin'), '/usr/bin', 'node_modules/.bin'].join(':'), bin)).toBe('/usr/bin:node_modules/.bin')
+  expect(withoutDirectory([`${bin}/`, join(dir, 'link', 'worker-bin'), '/usr/bin', 'node_modules/.bin'].join(delimiter), bin)).toBe(['/usr/bin', 'node_modules/.bin'].join(delimiter))
 })
 
 /** Minimal SubprocessRuntime backed by child_process.spawn with an isolated global git config. */

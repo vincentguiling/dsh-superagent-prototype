@@ -1,5 +1,6 @@
 /** Subprocess wrapper for running gh, lark-cli, and git commands under the deployment's configured accounts. */
 import { execFile } from 'node:child_process'
+import { nativeExecutable } from './platform.ts'
 import { basename } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
@@ -66,6 +67,7 @@ export class Commands {
   get repository(): string { return this.deployment.repository }
   withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal])) : this }
   async run(program: string, args: string[], cwd?: string): Promise<string> {
+    nativeExecutable(program)
     try {
       const { stdout } = await exec(program, args, { cwd, signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,
         env: { ...process.env, ...this.environment, GH_PROMPT_DISABLED: '1', LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1', LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })

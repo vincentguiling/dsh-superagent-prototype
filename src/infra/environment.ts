@@ -24,10 +24,11 @@ export const credentialHelper = (cli: string): string => `!${shellQuote(cli)} au
 
 export function sameDirectory(a: string, b: string): boolean {
   const real = (path: string): string => { try { return realpathSync(path) } catch { return resolve(path) } }
-  return real(a) === real(b)
+  const left = real(a), right = real(b)
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right
 }
 export function withoutDirectory(path: string, dir: string): string {
-  return path.split(delimiter).filter(entry => !sameDirectory(entry, dir)).join(delimiter)
+  return path.split(delimiter).filter(entry => !sameDirectory(process.platform === 'win32' ? entry.replace(/^"(.*)"$/, '$1') : entry, dir)).join(delimiter)
 }
 
 /**
@@ -60,8 +61,11 @@ export function agentVariables(stateDir: string): Record<string, string | undefi
 /** True when a regular file starts with the dsh-superagent marker in its first two lines; a symbolic link, directory, or other non-regular file never counts as written by dsh-superagent. */
 async function written(file: string): Promise<boolean> {
   if (!(await lstat(file)).isFile()) return false
-  const head = (await readFile(file, 'utf8')).split('\n', 2)
-  return [MARKER, ...LEGACY_MARKERS].some(marker => head.includes(marker))
+  const head = (await readFile(file, 'utf8')).split('\n', 2).map(line => line.replace(/^\uFEFF/, '').replace(/\r$/, ''))
+  const markers = [MARKER, ...LEGACY_MARKERS]
+  return process.platform === 'win32'
+    ? [...markers, ...markers.flatMap(marker => [`@rem ${marker.slice(1)}`, `// ${marker}`])].some(marker => head.includes(marker))
+    : markers.some(marker => head.includes(marker))
 }
 async function own(file: string, text: string, mode = 0o644): Promise<void> {
   let foreign = false
@@ -71,6 +75,66 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
   await writeFile(temporary, text, { mode })
   await rename(temporary, file)
 }
+
+/** Runs in the generated .cjs file, with argv forwarded losslessly by the PowerShell entry. */
+const windowsRunner = (program?: string, message?: string): string => [
+  `// ${MARKER}`,
+  'const program = ' + JSON.stringify(program ?? null) + ', message = ' + JSON.stringify(message ?? null) + ';',
+  String.raw`
+const { spawn } = require('node:child_process');
+const { realpathSync } = require('node:fs');
+const { resolve } = require('node:path');
+if (message !== null) { console.error(message); process.exit(1); }
+const canonical = p => { try { return realpathSync(p).toLowerCase(); } catch { return resolve(p).toLowerCase(); } };
+process.env.PATH = (process.env.PATH || '').split(';').filter(p => canonical(p.replace(/^"(.*)"$/, '$1')) !== canonical(__dirname)).join(';');
+const child = spawn(program, process.argv.slice(2), { stdio: 'inherit' });
+child.on('error', error => { console.error(error.message); process.exitCode = 1; });
+child.on('exit', code => { process.exitCode = code === null ? 1 : code; });
+`,
+].join('\n')
+
+const powershellQuote = (value: string): string => "'" + value.replaceAll("'", "''") + "'"
+
+/** Windows PowerShell's native-command binder loses empty args and quotes; bypass it using CRT quoting. */
+const windowsEntry = (runner: string): string => [
+  '$forwarded = @($args)',
+  String.raw`
+function ConvertTo-CrtArgument([string] $value) {
+  $quoted = [System.Text.StringBuilder]::new()
+  [void] $quoted.Append('"')
+  $slashes = 0
+  foreach ($character in $value.ToCharArray()) {
+    if ($character -eq '\') { $slashes++; continue }
+    if ($character -eq '"') {
+      [void] $quoted.Append(('\' * (2 * $slashes + 1)))
+    } else {
+      [void] $quoted.Append(('\' * $slashes))
+    }
+    [void] $quoted.Append($character)
+    $slashes = 0
+  }
+  [void] $quoted.Append(('\' * (2 * $slashes)))
+  [void] $quoted.Append('"')
+  return $quoted.ToString()
+}
+$start = [System.Diagnostics.ProcessStartInfo]::new()
+$start.UseShellExecute = $false
+`,
+  `$start.FileName = ${powershellQuote(process.execPath)}`,
+  `$start.Arguments = (@(${powershellQuote(runner)}) + $forwarded | ForEach-Object { ConvertTo-CrtArgument $_ }) -join ' '`,
+  String.raw`
+try {
+  $child = [System.Diagnostics.Process]::Start($start)
+  $child.WaitForExit()
+  $code = $child.ExitCode
+  $child.Dispose()
+  exit $code
+} catch {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 1
+}
+`,
+].join('\n')
 
 /**
  * Atomically writes worker CLI shims and the isolated git configuration file into the state directory, refusing to overwrite foreign files.
@@ -84,23 +148,36 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   for (const name of before) { const file = join(dir, name); if (!await written(file)) throw new SetupError('foreignFile', { file }) }
   // Workers may be running concurrently: write each shim to a temp file and atomically rename it so no command ever resolves past the shim directory.
   const kept = new Set<string>()
+  const windows = process.platform === 'win32'
+  const ext = windows ? '.ps1' : ''
   const shim = async (name: string, body: string): Promise<void> => {
+    const file = `${name}${ext}`
     const temporary = join(dir, `.${name}.${process.pid}.tmp`)
-    await writeFile(temporary, `#!/bin/sh\n${MARKER}\n${body}\n`, { mode: 0o755 })
-    await rename(temporary, join(dir, name))
-    kept.add(name)
+    // Windows PowerShell 5.1 needs a BOM to decode UTF-8 paths instead of the system ANSI code page.
+    const text = windows ? `\uFEFF${MARKER}\r\n${body}\r\n` : `#!/bin/sh\n${MARKER}\n${body}\n`
+    await writeFile(temporary, text, { mode: 0o755 })
+    await rename(temporary, join(dir, file))
+    kept.add(file)
   }
   const withoutShims = [
     `self=${shellQuote(dir)}`, 'rest=', 'IFS=:', 'set -f',
     'for entry in $PATH; do [ "$entry" = "$self" ] || rest="${rest:+$rest:}$entry"; done',
     'set +f', 'unset IFS', 'PATH=$rest', 'export PATH',
   ].join('\n')
-  const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`
-  const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
-  await shim('gh', run(github.cli))
-  await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
+  const command = async (name: string, program?: string, message?: string): Promise<void> => {
+    if (!windows) {
+      await shim(name, program ? `${withoutShims}\nexec ${shellQuote(program)} "$@"` : `echo ${shellQuote(message!)} >&2\nexit 1`)
+      return
+    }
+    const runner = `${name}.cjs`
+    await own(join(dir, runner), windowsRunner(program, message))
+    kept.add(runner)
+    await shim(name, windowsEntry(join(dir, runner)))
+  }
+  await command('gh', github.cli)
+  await command('lark-cli', feishu?.cli, feishu ? undefined : 'lark-cli is unavailable: this installation has no Feishu bot.')
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
-    await shim(name, fail(`${name} is blocked in this installation; use gh, which acts as ${github.login}.`))
+    await command(name, undefined, `${name} is blocked in this installation; use gh, which acts as ${github.login}.`)
   }
   for (const name of before) if (!kept.has(name)) await unlink(join(dir, name))
   await own(workerGitConfig(stateDir), [

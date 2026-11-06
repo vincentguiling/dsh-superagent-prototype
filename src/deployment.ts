@@ -1,7 +1,8 @@
 /** Plugin configuration and startup verification for repository access and agent CLI identities. */
 import { LIMITS } from './limits.ts'
 import { accessSync, constants, statSync } from 'node:fs'
-import { delimiter, isAbsolute, join } from 'node:path'
+import { delimiter, join } from 'node:path'
+import { absolutePathPattern, isAbsolutePath, nativeExecutable } from './infra/platform.ts'
 import type { Volatile } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
@@ -10,7 +11,7 @@ import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra
 import { SetupError } from './setup.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
-const absolute = (description: string) => s.string().pattern(/^\//).description(`${description} Absolute path.`)
+const absolute = (description: string) => s.string().pattern(absolutePathPattern()).description(`${description} Absolute path.`)
 /** Plugin configuration of the dsh-superagent entry. Volatile fields apply without a restart because dsh-superagent reads them on each use; changing `stateDir` remounts the plugin. */
 export const Config = s.object({
   stateDir: absolute('Directory for the database, locks, worker shims, the agent\'s git configuration and, by default, the ticket directories.').required(),
@@ -59,19 +60,27 @@ export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark
 
 /** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
 export function executable(name: string, path: string, exclude?: string): string {
-  if (name.includes('/') && !isAbsolute(name)) throw new Error(`${name} must be a command name or an absolute path`)
-  const candidates = isAbsolute(name) ? [name] : path.split(delimiter).filter(dir => isAbsolute(dir) && !(exclude && sameDirectory(dir, exclude))).map(dir => join(dir, name))
+  const windows = process.platform === 'win32'
+  const absolute = isAbsolutePath(name)
+  if (!absolute && (name.includes('/') || (windows && /[\\:]/.test(name)))) throw new Error(`${name} must be a command name or an absolute path`)
+  nativeExecutable(name)
+  // Only native executables can be passed to execFile without a shell; never discover .cmd/.bat launchers.
+  const names = windows && !name.toLowerCase().endsWith('.exe')
+    ? [...new Set((process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(ext => ext.toLowerCase() === '.exe').map(ext => name + ext))]
+    : [name]
+  const candidates = absolute ? names : path.split(delimiter).filter(dir => isAbsolutePath(dir) && !(exclude && sameDirectory(dir, exclude))).flatMap(dir => names.map(name => join(dir, name)))
   for (const candidate of candidates) {
     try { if (statSync(candidate).isFile()) { accessSync(candidate, constants.X_OK); return candidate } }
     catch { /* Not an executable file here; try the next PATH directory. */ }
   }
-  throw new Error(`${name} is not an executable file${isAbsolute(name) ? '' : ' on PATH'}`)
+  throw new Error(`${name} is not an executable file${absolute ? '' : ' on PATH'}`)
 }
 
 export type Probe = (argv: string[]) => Promise<string>
 /** Run startup checks through DSH's worker subprocess service with worker shims removed from PATH so a `gh` wrapper script reaches the real binary. */
 export function workerProbe(subprocess: SubprocessRuntime, stateDir: string, cwd: string, signal: AbortSignal): Probe {
   const path = withoutDirectory(process.env.PATH ?? '', workerBin(stateDir))
+  if (process.platform === 'win32') return argv => runAsWorker(subprocess, argv, cwd, AbortSignal.any([signal, AbortSignal.timeout(60_000)]), { PATH: path, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1', LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' })
   return argv => runAsWorker(subprocess, ['env', `PATH=${path}`, ...argv], cwd, AbortSignal.any([signal, AbortSignal.timeout(60_000)]))
 }
 
@@ -117,7 +126,8 @@ export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe:
   const fail = (error: unknown): never => { throw error instanceof SetupError ? error : new SetupError('feishuCliFailed', { output: reason(error) }) }
   let cli = ''
   try { cli = executable(name, path, workerBin(machine.stateDir)) } catch (error) { fail(error) }
-  const run = (...args: string[]): Promise<string> => probe(['env', 'LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1', 'LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1', cli, ...args]).catch(fail)
+  const notifiers = ['LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1', 'LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1']
+  const run = (...args: string[]): Promise<string> => probe(process.platform === 'win32' ? [cli, ...args] : ['env', ...notifiers, cli, ...args]).catch(fail)
   const text = await run('auth', 'status')
   const status = parsed(AuthStatus, text.slice(text.indexOf('{')))
   if (!status) return fail(new SetupError('feishuNoApp'))

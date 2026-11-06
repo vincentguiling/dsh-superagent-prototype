@@ -30,7 +30,7 @@ function context() {
 
 it('reads a limit DSH commits a new value of without a restart, and asks DSH to generate no settings page', async () => {
   const { ctx, handlers, configure } = context()
-  const config = Config({ stateDir: '/srv/state', promptMaxChars: 5000 })
+  const config = Config({ stateDir: process.platform === 'win32' ? 'C:/srv/state' : '/srv/state', promptMaxChars: 5000 })
   await apply(ctx as never, config)
   expect(configure).toHaveBeenCalledExactlyOnceWith({ auto: false }, ctx.fiber)
   const { machine } = runtimes.at(-1)!
@@ -45,7 +45,7 @@ it('asks DSH to read its settings entry again once a restart it started finished
   const { ctx, describe } = context()
   let finish = () => {}
   ctx.fiber.restart.mockImplementation(() => new Promise<void>(resolve => { finish = resolve }))
-  await apply(ctx as never, Config({ stateDir: '/srv/state' }))
+  await apply(ctx as never, Config({ stateDir: process.platform === 'win32' ? 'C:/srv/state' : '/srv/state' }))
   // Saving a Source account change restarts dsh-superagent, which re-runs setup and refreshes the settings descriptor.
   runtimes.at(-1)!.restart()
   await Promise.resolve()
@@ -56,7 +56,7 @@ it('asks DSH to read its settings entry again once a restart it started finished
 
 it('refuses keys of the previous configuration before registering anything', async () => {
   const { ctx } = context()
-  await expect(apply(ctx as never, Config({ stateDir: '/srv/state', github: { cli: 'gh' } } as never))).rejects.toThrow('github (now on the GitHub Source)')
+  await expect(apply(ctx as never, Config({ stateDir: process.platform === 'win32' ? 'C:/srv/state' : '/srv/state', github: { cli: 'gh' } } as never))).rejects.toThrow('github (now on the GitHub Source)')
   expect(ctx.on).not.toHaveBeenCalled()
   expect(ctx.inject).not.toHaveBeenCalled()
 })

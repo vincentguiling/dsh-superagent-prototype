@@ -105,7 +105,7 @@ export function ExecutionSettings() {
           <h2 className="dt-block-title">{t('term.environment')}<InfoTip text={t('environmentIntro')} /></h2>
           <Field label={t('executionDirectory')} hint={t('executionDirectoryHint')} note={value.directory ? undefined
             : t('executionDirectoryDefault', { root: environment.root })}>
-            <Input className="dt-mono" value={value.directory} placeholder={t('executionDirectoryEmpty')} spellCheck={false} pattern="/.*"
+            <Input className="dt-mono" value={value.directory} placeholder={t('executionDirectoryEmpty')} spellCheck={false}
               onChange={event => edit({ directory: event.target.value })} />
           </Field>
           <Field label={t('prepareCommand')} hint={t('prepareCommandHint')}>

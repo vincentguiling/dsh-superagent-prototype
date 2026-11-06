@@ -20,11 +20,19 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 ## Prerequisites
 
-- Node.js 22.19+ or 24+, pnpm, git 2.32+, Python 3.8+ and tmux
+- Node.js 22.19+ or 24+, pnpm and git 2.32+. The `scripts/dsh-superagent` service helper also requires a POSIX environment, Python 3.8+ and tmux.
 - GitHub CLI (`gh`) 2.48 or later. Source CLI fields must point to `gh` or `lark-cli` wrappers; the host relies on their subcommands and output formats.
 - A repository on github.com; GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
 - For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot
+
+### Native Windows scope
+
+The bundle accepts drive-rooted and UNC absolute paths and uses the profile's PowerShell tool on Windows. Host-side GitHub and Feishu commands run without a shell: configure a native `.exe` path, or an executable name resolved through `PATH` and the `.EXE` entry of `PATHEXT`. Batch and script launchers (`.cmd`, `.bat`, `.ps1` and extensionless shell wrappers) are not supported as configured CLIs. In particular, an npm-installed `lark-cli.cmd` is not a native executable. Use an environment where the configured CLIs are native executables, or run the POSIX deployment in a separate environment.
+
+The worker command shims are generated as `.ps1` entries and `.cjs` runners for PowerShell to invoke; the shell must allow these generated scripts under its execution policy. They preserve literal arguments (including empty strings and embedded quotes), inherited standard streams and exit codes, and remove their own directory from `PATH` before calling the configured CLI. This does not make configured batch-file CLIs supported by the host. Account configuration still belongs to the deployment; use a dedicated OS account if separate credentials are required without a wrapper.
+
+The service helper below remains POSIX-only. On native Windows, launch `dsh --profile superagent --no-open` with your process supervisor and use the panel or Management API to inspect health. A Windows service installer and full portability of the POSIX-dependent test suite remain outside this support scope.
 
 ## Accounts
 
